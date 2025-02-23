@@ -1,0 +1,457 @@
+// ============================================================================
+// Azure Performance Monitoring Platform - Comprehensive KQL Queries
+// ============================================================================
+// This file contains production-ready KQL queries for comprehensive performance monitoring
+// across Azure environments including system metrics, application performance, and health checks.
+
+// ============================================================================
+// 1. SYSTEM PERFORMANCE MONITORING
+// ============================================================================
+
+// CPU Performance Analysis with Trend Detection
+let CPUPerformanceAnalysis = 
+Perf
+| where TimeGenerated >= ago(1h)
+| where ObjectName == "Processor" and CounterName == "% Processor Time" and InstanceName == "_Total"
+| summarize 
+    AvgCPU = avg(CounterValue),
+    MaxCPU = max(CounterValue),
+    MinCPU = min(CounterValue),
+    P95CPU = percentile(CounterValue, 95),
+    P99CPU = percentile(CounterValue, 99)
+    by Computer, bin(TimeGenerated, 5m)
+| extend 
+    CPUStatus = case(
+        AvgCPU > 80, "Critical",
+        AvgCPU > 60, "Warning",
+        "Good"
+    ),
+    Recommendation = case(
+        AvgCPU > 80, "Immediate action required - CPU usage critically high",
+        AvgCPU > 60, "Monitor closely - CPU usage elevated",
+        "CPU performance within normal range"
+    );
+
+// Memory Performance Analysis with Pressure Detection
+let MemoryPerformanceAnalysis = 
+Perf
+| where TimeGenerated >= ago(1h)
+| where ObjectName == "Memory" and CounterName in ("% Committed Bytes In Use", "Available MBytes")
+| summarize 
+    AvgMemoryUsage = avgif(CounterValue, CounterName == "% Committed Bytes In Use"),
+    MaxMemoryUsage = maxif(CounterValue, CounterName == "% Committed Bytes In Use"),
+    AvgAvailableMemory = avgif(CounterValue, CounterName == "Available MBytes"),
+    MinAvailableMemory = minif(CounterValue, CounterName == "Available MBytes")
+    by Computer, bin(TimeGenerated, 5m)
+| extend 
+    MemoryStatus = case(
+        AvgMemoryUsage > 85, "Critical",
+        AvgMemoryUsage > 70, "Warning",
+        "Good"
+    ),
+    MemoryPressure = case(
+        MinAvailableMemory < 500, "High",
+        MinAvailableMemory < 1000, "Medium",
+        "Low"
+    ),
+    Recommendation = case(
+        AvgMemoryUsage > 85, "Critical memory usage - consider scaling up or optimizing applications",
+        AvgMemoryUsage > 70, "Elevated memory usage - monitor applications and consider optimization",
+        "Memory usage within acceptable range"
+    );
+
+// Disk Performance Analysis with I/O Monitoring
+let DiskPerformanceAnalysis = 
+Perf
+| where TimeGenerated >= ago(1h)
+| where ObjectName == "LogicalDisk" and CounterName in ("% Free Space", "Disk Reads/sec", "Disk Writes/sec", "Avg. Disk sec/Read", "Avg. Disk sec/Write")
+| where InstanceName != "_Total"
+| summarize 
+    AvgFreeSpace = avgif(CounterValue, CounterName == "% Free Space"),
+    AvgReadsPerSec = avgif(CounterValue, CounterName == "Disk Reads/sec"),
+    AvgWritesPerSec = avgif(CounterValue, CounterName == "Disk Writes/sec"),
+    AvgReadLatency = avgif(CounterValue, CounterName == "Avg. Disk sec/Read") * 1000,
+    AvgWriteLatency = avgif(CounterValue, CounterName == "Avg. Disk sec/Write") * 1000
+    by Computer, InstanceName, bin(TimeGenerated, 5m)
+| extend 
+    DiskStatus = case(
+        AvgFreeSpace < 10, "Critical",
+        AvgFreeSpace < 20, "Warning",
+        "Good"
+    ),
+    IOPerformance = case(
+        AvgReadLatency > 50 or AvgWriteLatency > 50, "Poor",
+        AvgReadLatency > 20 or AvgWriteLatency > 20, "Degraded",
+        "Good"
+    ),
+    Recommendation = case(
+        AvgFreeSpace < 10, "Critical disk space - immediate cleanup or expansion required",
+        AvgFreeSpace < 20, "Low disk space - plan for cleanup or expansion",
+        AvgReadLatency > 50 or AvgWriteLatency > 50, "High disk latency detected - check disk health",
+        "Disk performance within acceptable range"
+    );
+
+// Network Performance Analysis
+let NetworkPerformanceAnalysis = 
+Perf
+| where TimeGenerated >= ago(1h)
+| where ObjectName == "Network Interface" and CounterName in ("Bytes Received/sec", "Bytes Sent/sec", "Packets Received/sec", "Packets Sent/sec")
+| where InstanceName != "isatap" and InstanceName != "Teredo Tunneling Pseudo-Interface"
+| summarize 
+    AvgBytesReceived = avgif(CounterValue, CounterName == "Bytes Received/sec"),
+    AvgBytesSent = avgif(CounterValue, CounterName == "Bytes Sent/sec"),
+    MaxBytesReceived = maxif(CounterValue, CounterName == "Bytes Received/sec"),
+    MaxBytesSent = maxif(CounterValue, CounterName == "Bytes Sent/sec"),
+    AvgPacketsReceived = avgif(CounterValue, CounterName == "Packets Received/sec"),
+    AvgPacketsSent = avgif(CounterValue, CounterName == "Packets Sent/sec")
+    by Computer, InstanceName, bin(TimeGenerated, 5m)
+| extend 
+    NetworkUtilization = (AvgBytesReceived + AvgBytesSent) / (1024 * 1024), // MB/sec
+    NetworkStatus = case(
+        NetworkUtilization > 100, "High",
+        NetworkUtilization > 50, "Medium",
+        "Normal"
+    );
+
+// ============================================================================
+// 2. APPLICATION PERFORMANCE MONITORING
+// ============================================================================
+
+// Application Performance Overview with SLA Tracking
+let ApplicationPerformanceOverview = 
+requests
+| where timestamp >= ago(1h)
+| summarize 
+    TotalRequests = count(),
+    SuccessfulRequests = countif(success == true),
+    FailedRequests = countif(success == false),
+    AvgDuration = avg(duration),
+    P50Duration = percentile(duration, 50),
+    P95Duration = percentile(duration, 95),
+    P99Duration = percentile(duration, 99),
+    MaxDuration = max(duration)
+    by cloud_RoleName, bin(timestamp, 5m)
+| extend 
+    SuccessRate = (SuccessfulRequests * 100.0) / TotalRequests,
+    ErrorRate = (FailedRequests * 100.0) / TotalRequests,
+    SLAStatus = case(
+        SuccessRate < 99.9, "SLA Breach",
+        SuccessRate < 99.95, "SLA Risk",
+        "SLA Met"
+    ),
+    PerformanceStatus = case(
+        P95Duration > 5000, "Poor",
+        P95Duration > 2000, "Degraded",
+        "Good"
+    ),
+    Recommendation = case(
+        SuccessRate < 99.9, "Critical: Application error rate exceeds SLA threshold",
+        P95Duration > 5000, "Performance degradation detected - investigate slow operations",
+        P95Duration > 2000, "Response times elevated - monitor performance",
+        "Application performance within acceptable range"
+    );
+
+// Dependency Performance Analysis
+let DependencyPerformanceAnalysis = 
+dependencies
+| where timestamp >= ago(1h)
+| summarize 
+    TotalCalls = count(),
+    SuccessfulCalls = countif(success == true),
+    FailedCalls = countif(success == false),
+    AvgDuration = avg(duration),
+    P95Duration = percentile(duration, 95),
+    MaxDuration = max(duration)
+    by cloud_RoleName, type, target, bin(timestamp, 5m)
+| extend 
+    SuccessRate = (SuccessfulCalls * 100.0) / TotalCalls,
+    DependencyHealth = case(
+        SuccessRate < 95, "Critical",
+        SuccessRate < 98, "Warning",
+        "Good"
+    ),
+    PerformanceHealth = case(
+        P95Duration > 10000, "Poor",
+        P95Duration > 5000, "Degraded",
+        "Good"
+    );
+
+// Exception Analysis with Trending
+let ExceptionAnalysis = 
+exceptions
+| where timestamp >= ago(1h)
+| summarize 
+    ExceptionCount = count(),
+    UniqueExceptions = dcount(type),
+    TopExceptionType = arg_max(timestamp, type),
+    SampleMessage = any(outerMessage)
+    by cloud_RoleName, type, bin(timestamp, 15m)
+| extend 
+    ExceptionSeverity = case(
+        ExceptionCount > 100, "Critical",
+        ExceptionCount > 50, "High",
+        ExceptionCount > 10, "Medium",
+        "Low"
+    );
+
+// ============================================================================
+// 3. DATABASE PERFORMANCE MONITORING
+// ============================================================================
+
+// SQL Pool Query Performance Analysis
+let SQLPoolQueryAnalysis = 
+SynapseSqlPoolExecRequests 
+| where TimeGenerated >= ago(1h)
+| where Label != "health_checker"
+| extend duration_sec = datetime_diff("second", TimeGenerated, StartTime)
+| summarize 
+    QueryCount = count(),
+    AvgDuration = avg(duration_sec),
+    P50Duration = percentile(duration_sec, 50),
+    P95Duration = percentile(duration_sec, 95),
+    P99Duration = percentile(duration_sec, 99),
+    MaxDuration = max(duration_sec),
+    LongRunningQueries = countif(duration_sec > 300),
+    FailedQueries = countif(Status == "Failed"),
+    RunningQueries = countif(Status == "Running")
+    by ResourceClass, bin(TimeGenerated, 10m)
+| extend 
+    QueryPerformance = case(
+        P95Duration > 600, "Poor",
+        P95Duration > 300, "Degraded",
+        "Good"
+    ),
+    QueryHealth = case(
+        LongRunningQueries > 10, "Critical",
+        LongRunningQueries > 5, "Warning",
+        "Good"
+    );
+
+// Table Health and Skew Analysis
+let TableHealthAnalysis = 
+// This would typically come from a custom function that runs the table skew query
+// For demonstration, we'll create sample data
+datatable(schema_name:string, table_name:string, distribution_policy_name:string, table_row_count:long, Max_distribution_row_count:long, Min_distribution_row_count:long, avg_distribution_row_count:real, Table_Skew_Percent:real)
+[
+    "dbo", "sales_fact", "HASH", 10000000, 2500000, 500000, 1666666.67, 80.0,
+    "dbo", "customer_dim", "HASH", 5000000, 1200000, 800000, 833333.33, 33.33,
+    "dbo", "product_dim", "HASH", 2000000, 450000, 350000, 333333.33, 22.22,
+    "staging", "temp_orders", "HASH", 1500000, 400000, 200000, 250000.0, 50.0,
+    "dbo", "transaction_log", "HASH", 8000000, 1800000, 1200000, 1333333.33, 33.33
+]
+| extend 
+    SkewSeverity = case(
+        Table_Skew_Percent > 50, "Critical",
+        Table_Skew_Percent > 30, "High",
+        Table_Skew_Percent > 20, "Medium",
+        "Low"
+    ),
+    Recommendation = case(
+        Table_Skew_Percent > 50, "Critical skew detected - rebuild table with better distribution key",
+        Table_Skew_Percent > 30, "High skew detected - consider redistribution",
+        Table_Skew_Percent > 20, "Moderate skew detected - monitor performance impact",
+        "Table distribution is acceptable"
+    );
+
+// ============================================================================
+// 4. SPARK ANALYTICS PERFORMANCE
+// ============================================================================
+
+// Spark Application Performance Analysis
+let SparkApplicationAnalysis = 
+SparkMetrics_CL
+| where TimeGenerated >= ago(1h)
+| where name_s contains_cs "executor.cpuTime" or name_s contains_cs "executor.memoryUsed"
+| extend 
+    MetricType = case(
+        name_s contains_cs "cpuTime", "CPU",
+        name_s contains_cs "memoryUsed", "Memory",
+        "Other"
+    ),
+    MetricValue = case(
+        name_s contains_cs "cpuTime", count_d / 1000000, // Convert to seconds
+        name_s contains_cs "memoryUsed", count_d / (1024 * 1024), // Convert to MB
+        count_d
+    )
+| summarize 
+    AvgCPUTime = avgif(MetricValue, MetricType == "CPU"),
+    MaxCPUTime = maxif(MetricValue, MetricType == "CPU"),
+    AvgMemoryUsed = avgif(MetricValue, MetricType == "Memory"),
+    MaxMemoryUsed = maxif(MetricValue, MetricType == "Memory")
+    by applicationName_s, bin(TimeGenerated, 10m)
+| extend 
+    CPUPerformance = case(
+        MaxCPUTime > 100000, "Poor",
+        MaxCPUTime > 50000, "Degraded",
+        "Good"
+    ),
+    MemoryPerformance = case(
+        MaxMemoryUsed > 8192, "High Usage",
+        MaxMemoryUsed > 4096, "Medium Usage",
+        "Normal Usage"
+    );
+
+// Spark Job Failure Analysis
+let SparkJobFailureAnalysis = 
+SparkMetrics_CL
+| where TimeGenerated >= ago(1h)
+| where name_s contains_cs "job.failed" or name_s contains_cs "stage.failed"
+| summarize 
+    FailedJobs = countif(name_s contains_cs "job.failed"),
+    FailedStages = countif(name_s contains_cs "stage.failed"),
+    TotalFailures = count()
+    by applicationName_s, bin(TimeGenerated, 15m)
+| extend 
+    FailureRate = case(
+        TotalFailures > 10, "High",
+        TotalFailures > 5, "Medium",
+        TotalFailures > 0, "Low",
+        "None"
+    );
+
+// ============================================================================
+// 5. COMPREHENSIVE HEALTH SCORING
+// ============================================================================
+
+// Overall System Health Score Calculation
+let SystemHealthScore = 
+union 
+    (CPUPerformanceAnalysis | extend Component = "CPU", Score = case(CPUStatus == "Good", 100, CPUStatus == "Warning", 70, 30)),
+    (MemoryPerformanceAnalysis | extend Component = "Memory", Score = case(MemoryStatus == "Good", 100, MemoryStatus == "Warning", 70, 30)),
+    (DiskPerformanceAnalysis | extend Component = "Disk", Score = case(DiskStatus == "Good", 100, DiskStatus == "Warning", 70, 30))
+| summarize 
+    OverallScore = avg(Score),
+    ComponentCount = count(),
+    CriticalComponents = countif(Score <= 30),
+    WarningComponents = countif(Score > 30 and Score <= 70),
+    GoodComponents = countif(Score > 70)
+    by bin(TimeGenerated, 5m)
+| extend 
+    HealthStatus = case(
+        OverallScore >= 80, "Healthy",
+        OverallScore >= 60, "Warning",
+        "Critical"
+    );
+
+// ============================================================================
+// 6. ALERTING AND NOTIFICATION QUERIES
+// ============================================================================
+
+// Critical Issues Detection for Alerting
+let CriticalIssuesDetection = 
+union 
+    (CPUPerformanceAnalysis | where CPUStatus == "Critical" | extend IssueType = "High CPU Usage", Severity = "Critical"),
+    (MemoryPerformanceAnalysis | where MemoryStatus == "Critical" | extend IssueType = "High Memory Usage", Severity = "Critical"),
+    (DiskPerformanceAnalysis | where DiskStatus == "Critical" | extend IssueType = "Low Disk Space", Severity = "Critical"),
+    (ApplicationPerformanceOverview | where SLAStatus == "SLA Breach" | extend IssueType = "SLA Breach", Severity = "Critical"),
+    (SQLPoolQueryAnalysis | where QueryHealth == "Critical" | extend IssueType = "Database Performance", Severity = "Critical")
+| summarize 
+    IssueCount = count(),
+    AffectedSystems = dcount(Computer),
+    FirstDetected = min(TimeGenerated),
+    LastDetected = max(TimeGenerated)
+    by IssueType, Severity
+| extend 
+    Duration = datetime_diff("minute", LastDetected, FirstDetected),
+    AlertPriority = case(
+        Severity == "Critical" and AffectedSystems > 5, "P1",
+        Severity == "Critical", "P2",
+        "P3"
+    );
+
+// Performance Trend Analysis for Capacity Planning
+let PerformanceTrendAnalysis = 
+union 
+    (CPUPerformanceAnalysis | extend MetricName = "CPU", MetricValue = AvgCPU),
+    (MemoryPerformanceAnalysis | extend MetricName = "Memory", MetricValue = AvgMemoryUsage)
+| summarize 
+    CurrentValue = avg(MetricValue),
+    TrendSlope = (max(MetricValue) - min(MetricValue)) / count()
+    by MetricName, Computer
+| extend 
+    TrendDirection = case(
+        TrendSlope > 5, "Increasing",
+        TrendSlope < -5, "Decreasing",
+        "Stable"
+    ),
+    CapacityRisk = case(
+        CurrentValue > 80 and TrendDirection == "Increasing", "High",
+        CurrentValue > 60 and TrendDirection == "Increasing", "Medium",
+        "Low"
+    );
+
+// ============================================================================
+// 7. EXECUTIVE DASHBOARD QUERIES
+// ============================================================================
+
+// Executive Summary - Key Performance Indicators
+let ExecutiveSummary = 
+union 
+    (SystemHealthScore | extend KPI = "System Health", Value = OverallScore, Unit = "Score"),
+    (ApplicationPerformanceOverview | summarize Value = avg(SuccessRate) | extend KPI = "Application Availability", Unit = "%"),
+    (ApplicationPerformanceOverview | summarize Value = avg(P95Duration) | extend KPI = "Response Time P95", Unit = "ms"),
+    (SQLPoolQueryAnalysis | summarize Value = avg(AvgDuration) | extend KPI = "Database Performance", Unit = "seconds")
+| extend 
+    Status = case(
+        KPI == "System Health" and Value >= 80, "Good",
+        KPI == "System Health" and Value >= 60, "Warning",
+        KPI == "System Health", "Critical",
+        KPI == "Application Availability" and Value >= 99.9, "Good",
+        KPI == "Application Availability" and Value >= 99, "Warning",
+        KPI == "Application Availability", "Critical",
+        KPI == "Response Time P95" and Value <= 2000, "Good",
+        KPI == "Response Time P95" and Value <= 5000, "Warning",
+        KPI == "Response Time P95", "Critical",
+        KPI == "Database Performance" and Value <= 30, "Good",
+        KPI == "Database Performance" and Value <= 60, "Warning",
+        "Critical"
+    );
+
+// Cost and Resource Utilization Analysis
+let ResourceUtilizationAnalysis = 
+union 
+    (CPUPerformanceAnalysis | summarize AvgUtilization = avg(AvgCPU) | extend ResourceType = "CPU"),
+    (MemoryPerformanceAnalysis | summarize AvgUtilization = avg(AvgMemoryUsage) | extend ResourceType = "Memory"),
+    (DiskPerformanceAnalysis | summarize AvgUtilization = 100 - avg(AvgFreeSpace) | extend ResourceType = "Disk")
+| extend 
+    UtilizationEfficiency = case(
+        AvgUtilization > 80, "Over-utilized",
+        AvgUtilization > 60, "Well-utilized",
+        AvgUtilization > 30, "Under-utilized",
+        "Significantly under-utilized"
+    ),
+    CostOptimizationOpportunity = case(
+        AvgUtilization < 30, "High",
+        AvgUtilization < 50, "Medium",
+        "Low"
+    );
+
+// ============================================================================
+// SAMPLE USAGE EXAMPLES
+// ============================================================================
+
+// Example 1: Get current system health overview
+SystemHealthScore
+| where TimeGenerated >= ago(15m)
+| summarize arg_max(TimeGenerated, *)
+| project HealthStatus, OverallScore, CriticalComponents, WarningComponents, GoodComponents
+
+// Example 2: Identify top performance issues
+CriticalIssuesDetection
+| where AlertPriority in ("P1", "P2")
+| order by IssueCount desc, AffectedSystems desc
+
+// Example 3: Application performance summary
+ApplicationPerformanceOverview
+| where timestamp >= ago(30m)
+| summarize 
+    AvgSuccessRate = avg(SuccessRate),
+    AvgResponseTime = avg(P95Duration),
+    TotalRequests = sum(TotalRequests)
+    by cloud_RoleName
+| order by AvgSuccessRate asc, AvgResponseTime desc
+
+// Example 4: Resource utilization for capacity planning
+ResourceUtilizationAnalysis
+| where CostOptimizationOpportunity in ("High", "Medium")
+| order by AvgUtilization asc

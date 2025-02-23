@@ -1,0 +1,184 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Azure Performance Monitoring Platform - Alert Rules Template",
+    "author": "Azure Performance Monitoring Platform Team"
+  },
+  "parameters": {
+    "workspaceResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Log Analytics workspace"
+      }
+    },
+    "actionGroupResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the action group for notifications"
+      }
+    },
+    "environmentName": {
+      "type": "string",
+      "defaultValue": "prod",
+      "metadata": {
+        "description": "Environment name for alert naming"
+      }
+    }
+  },
+  "variables": {
+    "alertRules": [
+      {
+        "name": "[concat('High CPU Usage - ', parameters('environmentName'))]",
+        "description": "Alert when CPU usage exceeds 80% for 5 minutes",
+        "severity": 2,
+        "query": "Perf | where ObjectName == \"Processor\" and CounterName == \"% Processor Time\" and InstanceName == \"_Total\" | summarize AggregatedValue = avg(CounterValue) by bin(TimeGenerated, 5m) | where AggregatedValue > 80",
+        "frequency": "PT5M",
+        "timeWindow": "PT15M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('High Memory Usage - ', parameters('environmentName'))]",
+        "description": "Alert when memory usage exceeds 85% for 5 minutes",
+        "severity": 2,
+        "query": "Perf | where ObjectName == \"Memory\" and CounterName == \"% Committed Bytes In Use\" | summarize AggregatedValue = avg(CounterValue) by bin(TimeGenerated, 5m) | where AggregatedValue > 85",
+        "frequency": "PT5M",
+        "timeWindow": "PT15M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Long Running Queries - ', parameters('environmentName'))]",
+        "description": "Alert when SQL queries run longer than 5 minutes",
+        "severity": 1,
+        "query": "SynapseSqlPoolExecRequests | where Status contains \"Running\" | extend duration_sec = datetime_diff(\"second\", TimeGenerated, StartTime) | where duration_sec > 300 | summarize count() by bin(TimeGenerated, 5m)",
+        "frequency": "PT5M",
+        "timeWindow": "PT10M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('High Spark CPU Consumption - ', parameters('environmentName'))]",
+        "description": "Alert when Spark notebooks consume high CPU",
+        "severity": 2,
+        "query": "SparkMetrics_CL | where name_s contains_cs \"executor.cpuTime\" | extend cputime = count_d / 1000000 | summarize sum(cputime) by TimeGenerated, applicationName_s | summarize cpu_time_ms = max(sum_cputime) by bin(TimeGenerated, 10m), applicationName_s | where cpu_time_ms > 10000",
+        "frequency": "PT10M",
+        "timeWindow": "PT20M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Table Skew Detection - ', parameters('environmentName'))]",
+        "description": "Alert when table skew exceeds 20%",
+        "severity": 3,
+        "query": "let SkewThreshold = 20.0; AzureDiagnostics | where Category == \"SqlRequests\" | where OperationName == \"TableSkewCheck\" | extend SkewPercent = todouble(Properties.SkewPercent) | where SkewPercent > SkewThreshold | summarize count() by bin(TimeGenerated, 1h)",
+        "frequency": "PT1H",
+        "timeWindow": "PT2H",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Failed Health Checks - ', parameters('environmentName'))]",
+        "description": "Alert when health checks fail",
+        "severity": 1,
+        "query": "AzureDiagnostics | where Category == \"HealthCheck\" | where Level == \"Error\" | summarize count() by bin(TimeGenerated, 15m) | where count_ > 0",
+        "frequency": "PT15M",
+        "timeWindow": "PT30M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Storage Account High Usage - ', parameters('environmentName'))]",
+        "description": "Alert when storage account usage exceeds 80%",
+        "severity": 2,
+        "query": "AzureMetrics | where ResourceProvider == \"MICROSOFT.STORAGE\" | where MetricName == \"UsedCapacity\" | summarize AggregatedValue = avg(Average) by bin(TimeGenerated, 1h), Resource | extend UsagePercent = (AggregatedValue / 5368709120000) * 100 | where UsagePercent > 80",
+        "frequency": "PT1H",
+        "timeWindow": "PT2H",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Application Insights High Error Rate - ', parameters('environmentName'))]",
+        "description": "Alert when application error rate exceeds 5%",
+        "severity": 1,
+        "query": "requests | summarize TotalRequests = count(), FailedRequests = countif(success == false) by bin(timestamp, 5m) | extend ErrorRate = (FailedRequests * 100.0) / TotalRequests | where ErrorRate > 5",
+        "frequency": "PT5M",
+        "timeWindow": "PT15M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Data Explorer Query Performance - ', parameters('environmentName'))]",
+        "description": "Alert when Data Explorer queries are slow",
+        "severity": 2,
+        "query": ".show queries | where Duration > time(30s) | summarize count() by bin(StartedOn, 10m) | where count_ > 5",
+        "frequency": "PT10M",
+        "timeWindow": "PT20M",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      },
+      {
+        "name": "[concat('Automation Runbook Failures - ', parameters('environmentName'))]",
+        "description": "Alert when automation runbooks fail",
+        "severity": 1,
+        "query": "AzureDiagnostics | where ResourceProvider == \"MICROSOFT.AUTOMATION\" | where Category == \"JobLogs\" | where ResultType == \"Failed\" | summarize count() by bin(TimeGenerated, 30m) | where count_ > 0",
+        "frequency": "PT30M",
+        "timeWindow": "PT1H",
+        "threshold": 1,
+        "operator": "GreaterThanOrEqual"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "copy": {
+        "name": "alertRuleLoop",
+        "count": "[length(variables('alertRules'))]"
+      },
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2021-08-01",
+      "name": "[variables('alertRules')[copyIndex()].name]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "[variables('alertRules')[copyIndex()].name]",
+        "description": "[variables('alertRules')[copyIndex()].description]",
+        "severity": "[variables('alertRules')[copyIndex()].severity]",
+        "enabled": true,
+        "scopes": [
+          "[parameters('workspaceResourceId')]"
+        ],
+        "evaluationFrequency": "[variables('alertRules')[copyIndex()].frequency]",
+        "windowSize": "[variables('alertRules')[copyIndex()].timeWindow]",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "[variables('alertRules')[copyIndex()].query]",
+              "timeAggregation": "Count",
+              "operator": "[variables('alertRules')[copyIndex()].operator]",
+              "threshold": "[variables('alertRules')[copyIndex()].threshold]",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[parameters('actionGroupResourceId')]"
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "alertRuleIds": {
+      "type": "array",
+      "copy": {
+        "count": "[length(variables('alertRules'))]",
+        "input": "[resourceId('Microsoft.Insights/scheduledQueryRules', variables('alertRules')[copyIndex()].name)]"
+      }
+    }
+  }
+}

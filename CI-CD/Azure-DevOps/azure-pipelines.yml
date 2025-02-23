@@ -1,0 +1,487 @@
+# Azure Performance Monitoring Platform - CI/CD Pipeline
+# This pipeline deploys the complete APMP infrastructure and monitoring components
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    include:
+    - Azure-Performance-Monitoring-Platform/*
+
+variables:
+  # Pipeline Variables
+  vmImageName: 'windows-latest'
+  azureServiceConnection: 'Azure-Service-Connection'
+  
+  # Environment Variables
+  ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
+    environmentName: 'prod'
+    resourceGroupName: 'rg-apmp-prod'
+    location: 'East US 2'
+  ${{ else }}:
+    environmentName: 'dev'
+    resourceGroupName: 'rg-apmp-dev'
+    location: 'East US 2'
+
+stages:
+- stage: Validate
+  displayName: 'Validate Templates and Scripts'
+  jobs:
+  - job: ValidateTemplates
+    displayName: 'Validate ARM Templates'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: PowerShell@2
+      displayName: 'Install Required Modules'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Install-Module -Name Az -Force -AllowClobber -Scope CurrentUser
+          Install-Module -Name Pester -Force -AllowClobber -Scope CurrentUser
+        pwsh: true
+
+    - task: AzurePowerShell@5
+      displayName: 'Validate ARM Templates'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        ScriptType: 'InlineScript'
+        Inline: |
+          # Validate main template
+          $templateFile = "$(Build.SourcesDirectory)/Azure-Performance-Monitoring-Platform/Infrastructure/ARM-Templates/main-template.json"
+          $parametersFile = "$(Build.SourcesDirectory)/Azure-Performance-Monitoring-Platform/Infrastructure/ARM-Templates/parameters.json"
+          
+          Write-Host "Validating ARM template: $templateFile"
+          
+          $validation = Test-AzResourceGroupDeployment `
+            -ResourceGroupName "validation-rg" `
+            -TemplateFile $templateFile `
+            -TemplateParameterFile $parametersFile `
+            -Mode Complete
+          
+          if ($validation) {
+            Write-Error "Template validation failed: $($validation | ConvertTo-Json -Depth 10)"
+            exit 1
+          } else {
+            Write-Host "✅ ARM template validation successful"
+          }
+        azurePowerShellVersion: 'LatestVersion'
+
+    - task: PowerShell@2
+      displayName: 'Run PowerShell Script Tests'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Test PowerShell scripts syntax
+          $scriptPath = "$(Build.SourcesDirectory)/Azure-Performance-Monitoring-Platform/Infrastructure/PowerShell"
+          $scripts = Get-ChildItem -Path $scriptPath -Filter "*.ps1" -Recurse
+          
+          foreach ($script in $scripts) {
+            Write-Host "Testing script: $($script.Name)"
+            $errors = $null
+            $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $script.FullName -Raw), [ref]$errors)
+            
+            if ($errors) {
+              Write-Error "Script validation failed for $($script.Name): $($errors | Out-String)"
+              exit 1
+            } else {
+              Write-Host "✅ Script validation successful for $($script.Name)"
+            }
+          }
+        pwsh: true
+
+- stage: Deploy_Infrastructure
+  displayName: 'Deploy Infrastructure'
+  dependsOn: Validate
+  condition: succeeded()
+  jobs:
+  - deployment: DeployInfrastructure
+    displayName: 'Deploy APMP Infrastructure'
+    pool:
+      vmImage: $(vmImageName)
+    environment: $(environmentName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: AzurePowerShell@5
+            displayName: 'Deploy Infrastructure'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(Pipeline.Workspace)/s/Azure-Performance-Monitoring-Platform/Infrastructure/PowerShell/Deploy-Infrastructure.ps1'
+              ScriptArguments: >
+                -SubscriptionId "$(subscriptionId)"
+                -ResourceGroupName "$(resourceGroupName)"
+                -Location "$(location)"
+                -EnvironmentName "$(environmentName)"
+                -NotificationEmail "$(notificationEmail)"
+              azurePowerShellVersion: 'LatestVersion'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Deployment Artifacts'
+            inputs:
+              targetPath: '$(Pipeline.Workspace)/s/Azure-Performance-Monitoring-Platform'
+              artifact: 'APMP-Deployment-$(environmentName)'
+
+- stage: Deploy_Monitoring
+  displayName: 'Deploy Monitoring Components'
+  dependsOn: Deploy_Infrastructure
+  condition: succeeded()
+  jobs:
+  - deployment: DeployMonitoring
+    displayName: 'Deploy Alert Rules and Dashboards'
+    pool:
+      vmImage: $(vmImageName)
+    environment: $(environmentName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: AzurePowerShell@5
+            displayName: 'Deploy Alert Rules'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                # Get workspace and action group resource IDs
+                $workspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.Name -like "*apmp*" }
+                $actionGroup = Get-AzActionGroup -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.Name -like "*apmp*" }
+                
+                if (-not $workspace) {
+                  Write-Error "Log Analytics workspace not found in resource group $(resourceGroupName)"
+                  exit 1
+                }
+                
+                if (-not $actionGroup) {
+                  Write-Error "Action group not found in resource group $(resourceGroupName)"
+                  exit 1
+                }
+                
+                # Deploy alert rules
+                $templateFile = "$(Pipeline.Workspace)/s/Azure-Performance-Monitoring-Platform/Monitoring/Alert-Rules/performance-alert-rules.json"
+                
+                $deployment = New-AzResourceGroupDeployment `
+                  -ResourceGroupName "$(resourceGroupName)" `
+                  -Name "APMP-AlertRules-$(Get-Date -Format 'yyyyMMddHHmmss')" `
+                  -TemplateFile $templateFile `
+                  -workspaceResourceId $workspace.ResourceId `
+                  -actionGroupResourceId $actionGroup.Id `
+                  -environmentName "$(environmentName)" `
+                  -Verbose
+                
+                if ($deployment.ProvisioningState -eq "Succeeded") {
+                  Write-Host "✅ Alert rules deployed successfully"
+                } else {
+                  Write-Error "Alert rules deployment failed: $($deployment.ProvisioningState)"
+                  exit 1
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+          - task: AzureCLI@2
+            displayName: 'Deploy Performance Dashboard'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Deploy Azure Workbook
+                $workbookContent = Get-Content "$(Pipeline.Workspace)/s/Azure-Performance-Monitoring-Platform/Monitoring/Dashboards/performance-dashboard.json" -Raw
+                $workbookName = "APMP-Performance-Dashboard-$(environmentName)"
+                
+                # Create workbook using Azure CLI
+                az monitor app-insights workbook create `
+                  --resource-group "$(resourceGroupName)" `
+                  --name $workbookName `
+                  --display-name "Azure Performance Monitoring Platform Dashboard" `
+                  --description "Comprehensive performance monitoring dashboard for APMP" `
+                  --serialized-data $workbookContent `
+                  --category "performance" `
+                  --tags "Project=APMP" "Environment=$(environmentName)"
+                
+                Write-Host "✅ Performance dashboard deployed successfully"
+
+- stage: Deploy_Automation
+  displayName: 'Deploy Automation Components'
+  dependsOn: Deploy_Monitoring
+  condition: succeeded()
+  jobs:
+  - deployment: DeployAutomation
+    displayName: 'Deploy Runbooks and Automation'
+    pool:
+      vmImage: $(vmImageName)
+    environment: $(environmentName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: AzurePowerShell@5
+            displayName: 'Deploy Automation Runbooks'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                # Get automation account
+                $automationAccount = Get-AzAutomationAccount -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.AutomationAccountName -like "*apmp*" }
+                
+                if (-not $automationAccount) {
+                  Write-Error "Automation account not found in resource group $(resourceGroupName)"
+                  exit 1
+                }
+                
+                # Import health check runbook
+                $runbookPath = "$(Pipeline.Workspace)/s/Azure-Performance-Monitoring-Platform/Automation/Runbooks/Health-Check-Automation.ps1"
+                $runbookName = "APMP-Health-Check-Automation"
+                
+                Import-AzAutomationRunbook `
+                  -ResourceGroupName "$(resourceGroupName)" `
+                  -AutomationAccountName $automationAccount.AutomationAccountName `
+                  -Name $runbookName `
+                  -Type PowerShell `
+                  -Path $runbookPath `
+                  -Description "Automated health check runbook for Azure Performance Monitoring Platform" `
+                  -Force
+                
+                # Publish runbook
+                Publish-AzAutomationRunbook `
+                  -ResourceGroupName "$(resourceGroupName)" `
+                  -AutomationAccountName $automationAccount.AutomationAccountName `
+                  -Name $runbookName
+                
+                Write-Host "✅ Health check runbook deployed and published successfully"
+                
+                # Create schedule for health checks
+                $scheduleName = "APMP-Health-Check-Schedule"
+                $startTime = (Get-Date).AddMinutes(10)
+                
+                New-AzAutomationSchedule `
+                  -ResourceGroupName "$(resourceGroupName)" `
+                  -AutomationAccountName $automationAccount.AutomationAccountName `
+                  -Name $scheduleName `
+                  -Description "Automated health check schedule - runs every 15 minutes" `
+                  -StartTime $startTime `
+                  -Interval 15 `
+                  -Frequency Minute
+                
+                # Link runbook to schedule
+                Register-AzAutomationScheduledRunbook `
+                  -ResourceGroupName "$(resourceGroupName)" `
+                  -AutomationAccountName $automationAccount.AutomationAccountName `
+                  -RunbookName $runbookName `
+                  -ScheduleName $scheduleName `
+                  -Parameters @{
+                    WorkspaceId = "$(workspaceId)"
+                    SubscriptionId = "$(subscriptionId)"
+                    ResourceGroupName = "$(resourceGroupName)"
+                  }
+                
+                Write-Host "✅ Health check schedule created and linked successfully"
+              azurePowerShellVersion: 'LatestVersion'
+
+- stage: Validate_Deployment
+  displayName: 'Validate Deployment'
+  dependsOn: Deploy_Automation
+  condition: succeeded()
+  jobs:
+  - job: ValidateDeployment
+    displayName: 'Run Deployment Validation Tests'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: AzurePowerShell@5
+      displayName: 'Validate Infrastructure Deployment'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        ScriptType: 'InlineScript'
+        Inline: |
+          Write-Host "🔍 Validating APMP infrastructure deployment..."
+          
+          # Check resource group exists
+          $rg = Get-AzResourceGroup -Name "$(resourceGroupName)" -ErrorAction SilentlyContinue
+          if (-not $rg) {
+            Write-Error "❌ Resource group $(resourceGroupName) not found"
+            exit 1
+          }
+          Write-Host "✅ Resource group exists: $(resourceGroupName)"
+          
+          # Check Log Analytics workspace
+          $workspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.Name -like "*apmp*" }
+          if (-not $workspace) {
+            Write-Error "❌ Log Analytics workspace not found"
+            exit 1
+          }
+          Write-Host "✅ Log Analytics workspace exists: $($workspace.Name)"
+          
+          # Check Application Insights
+          $appInsights = Get-AzApplicationInsights -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.Name -like "*apmp*" }
+          if (-not $appInsights) {
+            Write-Error "❌ Application Insights not found"
+            exit 1
+          }
+          Write-Host "✅ Application Insights exists: $($appInsights.Name)"
+          
+          # Check Automation Account
+          $automationAccount = Get-AzAutomationAccount -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.AutomationAccountName -like "*apmp*" }
+          if (-not $automationAccount) {
+            Write-Error "❌ Automation Account not found"
+            exit 1
+          }
+          Write-Host "✅ Automation Account exists: $($automationAccount.AutomationAccountName)"
+          
+          # Check Action Group
+          $actionGroup = Get-AzActionGroup -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.Name -like "*apmp*" }
+          if (-not $actionGroup) {
+            Write-Error "❌ Action Group not found"
+            exit 1
+          }
+          Write-Host "✅ Action Group exists: $($actionGroup.Name)"
+          
+          Write-Host "🎉 All infrastructure components validated successfully!"
+        azurePowerShellVersion: 'LatestVersion'
+
+    - task: PowerShell@2
+      displayName: 'Generate Deployment Report'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $deploymentReport = @{
+            Environment = "$(environmentName)"
+            ResourceGroup = "$(resourceGroupName)"
+            Location = "$(location)"
+            DeploymentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+            PipelineId = "$(Build.BuildId)"
+            CommitId = "$(Build.SourceVersion)"
+            Status = "Success"
+            Components = @(
+              "Log Analytics Workspace",
+              "Application Insights",
+              "Azure Data Explorer",
+              "Automation Account",
+              "Key Vault",
+              "Storage Account",
+              "Action Group",
+              "Alert Rules",
+              "Performance Dashboard",
+              "Health Check Runbook"
+            )
+          }
+          
+          $reportJson = $deploymentReport | ConvertTo-Json -Depth 10
+          $reportPath = "$(Agent.TempDirectory)/deployment-report.json"
+          $reportJson | Out-File -FilePath $reportPath -Encoding UTF8
+          
+          Write-Host "📊 Deployment report generated:"
+          Write-Host $reportJson
+          
+          # Set output variable for downstream tasks
+          Write-Host "##vso[task.setvariable variable=deploymentReportPath]$reportPath"
+        pwsh: true
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Deployment Report'
+      inputs:
+        targetPath: '$(deploymentReportPath)'
+        artifact: 'APMP-Deployment-Report-$(environmentName)'
+
+- stage: Post_Deployment
+  displayName: 'Post-Deployment Tasks'
+  dependsOn: Validate_Deployment
+  condition: succeeded()
+  jobs:
+  - job: PostDeployment
+    displayName: 'Execute Post-Deployment Tasks'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: AzurePowerShell@5
+      displayName: 'Run Initial Health Check'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        ScriptType: 'InlineScript'
+        Inline: |
+          Write-Host "🏥 Running initial health check..."
+          
+          # Get workspace ID
+          $workspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.Name -like "*apmp*" }
+          $workspaceId = $workspace.CustomerId
+          
+          # Get automation account
+          $automationAccount = Get-AzAutomationAccount -ResourceGroupName "$(resourceGroupName)" | Where-Object { $_.AutomationAccountName -like "*apmp*" }
+          
+          # Start health check runbook
+          $runbookName = "APMP-Health-Check-Automation"
+          $jobId = Start-AzAutomationRunbook `
+            -ResourceGroupName "$(resourceGroupName)" `
+            -AutomationAccountName $automationAccount.AutomationAccountName `
+            -Name $runbookName `
+            -Parameters @{
+              WorkspaceId = $workspaceId
+              SubscriptionId = "$(subscriptionId)"
+              ResourceGroupName = "$(resourceGroupName)"
+            }
+          
+          Write-Host "✅ Initial health check started with job ID: $($jobId.JobId)"
+          
+          # Wait for job completion (max 5 minutes)
+          $timeout = 300
+          $elapsed = 0
+          do {
+            Start-Sleep -Seconds 10
+            $elapsed += 10
+            $job = Get-AzAutomationJob -ResourceGroupName "$(resourceGroupName)" -AutomationAccountName $automationAccount.AutomationAccountName -Id $jobId.JobId
+            Write-Host "Health check job status: $($job.Status)"
+          } while ($job.Status -eq "Running" -and $elapsed -lt $timeout)
+          
+          if ($job.Status -eq "Completed") {
+            Write-Host "✅ Initial health check completed successfully"
+            $output = Get-AzAutomationJobOutput -ResourceGroupName "$(resourceGroupName)" -AutomationAccountName $automationAccount.AutomationAccountName -Id $jobId.JobId -Stream Output
+            Write-Host "Health check results:"
+            $output | ForEach-Object { Write-Host $_.Summary }
+          } else {
+            Write-Warning "⚠️ Health check did not complete within timeout period"
+          }
+        azurePowerShellVersion: 'LatestVersion'
+
+    - task: PowerShell@2
+      displayName: 'Send Deployment Notification'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "📧 Sending deployment notification..."
+          
+          $notificationMessage = @"
+          🎉 Azure Performance Monitoring Platform Deployment Completed Successfully!
+          
+          Environment: $(environmentName)
+          Resource Group: $(resourceGroupName)
+          Location: $(location)
+          Pipeline: $(Build.BuildId)
+          Commit: $(Build.SourceVersion)
+          
+          Components Deployed:
+          ✅ Infrastructure (Log Analytics, App Insights, Data Explorer, etc.)
+          ✅ Monitoring (Alert Rules, Dashboards)
+          ✅ Automation (Health Check Runbooks, Schedules)
+          
+          Next Steps:
+          1. Review the performance dashboard
+          2. Configure additional alert recipients
+          3. Customize monitoring queries as needed
+          4. Set up custom health checks for your applications
+          
+          Dashboard URL: https://portal.azure.com/#@tenant/dashboard/arm/subscriptions/$(subscriptionId)/resourcegroups/$(resourceGroupName)/providers/microsoft.insights/workbooks
+          "@
+          
+          Write-Host $notificationMessage
+          
+          # In a real scenario, you would send this via email, Teams, Slack, etc.
+          Write-Host "✅ Deployment notification prepared"
+        pwsh: true

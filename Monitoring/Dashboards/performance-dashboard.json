@@ -1,0 +1,636 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# 📊 Azure Performance Monitoring Platform Dashboard\n\n## Real-time Performance Monitoring and Analytics\n\nThis dashboard provides comprehensive performance monitoring across your Azure environment including system metrics, application performance, database health, and operational insights.\n\n---"
+      },
+      "name": "Header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeRange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 3600000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 300000
+                },
+                {
+                  "durationMs": 900000
+                },
+                {
+                  "durationMs": 1800000
+                },
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 259200000
+                },
+                {
+                  "durationMs": 604800000
+                }
+              ]
+            },
+            "timeContext": {
+              "durationMs": 86400000
+            }
+          },
+          {
+            "id": "workspace",
+            "version": "KqlParameterItem/1.0",
+            "name": "Workspace",
+            "type": 5,
+            "isRequired": true,
+            "query": "Resources | where type =~ 'microsoft.operationalinsights/workspaces' | project id, name",
+            "crossComponentResources": [
+              "value::selected"
+            ],
+            "typeSettings": {
+              "resourceTypeFilter": {
+                "microsoft.operationalinsights/workspaces": true
+              },
+              "additionalResourceOptions": [
+                "value::1"
+              ]
+            },
+            "timeContext": {
+              "durationMs": 86400000
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources"
+      },
+      "name": "Parameters"
+    },
+    {
+      "type": 11,
+      "content": {
+        "version": "LinkItem/1.0",
+        "style": "tabs",
+        "links": [
+          {
+            "id": "overview-tab",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "🏠 Overview",
+            "subTarget": "overview",
+            "style": "link"
+          },
+          {
+            "id": "system-tab",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "🖥️ System Performance",
+            "subTarget": "system",
+            "style": "link"
+          },
+          {
+            "id": "database-tab",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "🗄️ Database Performance",
+            "subTarget": "database",
+            "style": "link"
+          },
+          {
+            "id": "spark-tab",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "⚡ Spark Analytics",
+            "subTarget": "spark",
+            "style": "link"
+          },
+          {
+            "id": "health-tab",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "🏥 Health Checks",
+            "subTarget": "health",
+            "style": "link"
+          }
+        ]
+      },
+      "name": "Navigation Tabs"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// System Health Overview\nPerf\n| where TimeGenerated {TimeRange}\n| where ObjectName in (\"Processor\", \"Memory\", \"LogicalDisk\")\n| where CounterName in (\"% Processor Time\", \"% Committed Bytes In Use\", \"% Free Space\")\n| where InstanceName in (\"_Total\", \"_Global_\", \"C:\")\n| summarize AvgValue = avg(CounterValue) by CounterName, bin(TimeGenerated, 5m)\n| render timechart",
+              "size": 0,
+              "title": "📈 System Performance Overview",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "50",
+            "name": "System Performance Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Application Performance Summary\nrequests\n| where timestamp {TimeRange}\n| summarize \n    TotalRequests = count(),\n    SuccessfulRequests = countif(success == true),\n    FailedRequests = countif(success == false),\n    AvgDuration = avg(duration),\n    P95Duration = percentile(duration, 95)\n    by bin(timestamp, 5m)\n| extend SuccessRate = (SuccessfulRequests * 100.0) / TotalRequests\n| project timestamp, TotalRequests, SuccessRate, AvgDuration, P95Duration\n| render timechart",
+              "size": 0,
+              "title": "🚀 Application Performance Metrics",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "50",
+            "name": "Application Performance Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Performance KPIs\nlet SystemMetrics = Perf\n| where TimeGenerated {TimeRange}\n| where ObjectName == \"Processor\" and CounterName == \"% Processor Time\" and InstanceName == \"_Total\"\n| summarize AvgCPU = avg(CounterValue), MaxCPU = max(CounterValue);\nlet MemoryMetrics = Perf\n| where TimeGenerated {TimeRange}\n| where ObjectName == \"Memory\" and CounterName == \"% Committed Bytes In Use\"\n| summarize AvgMemory = avg(CounterValue), MaxMemory = max(CounterValue);\nlet AppMetrics = requests\n| where timestamp {TimeRange}\n| summarize \n    TotalRequests = count(),\n    SuccessRate = (countif(success == true) * 100.0) / count(),\n    AvgResponseTime = avg(duration);\nSystemMetrics\n| extend dummy = 1\n| join kind=inner (MemoryMetrics | extend dummy = 1) on dummy\n| join kind=inner (AppMetrics | extend dummy = 1) on dummy\n| project \n    Metric = \"Performance KPIs\",\n    AvgCPU = round(AvgCPU, 2),\n    MaxCPU = round(MaxCPU, 2),\n    AvgMemory = round(AvgMemory, 2),\n    MaxMemory = round(MaxMemory, 2),\n    TotalRequests,\n    SuccessRate = round(SuccessRate, 2),\n    AvgResponseTime = round(AvgResponseTime, 2)",
+              "size": 0,
+              "title": "📊 Key Performance Indicators",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ],
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  {
+                    "columnMatch": "AvgCPU",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "greenRed"
+                    }
+                  },
+                  {
+                    "columnMatch": "MaxCPU",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "greenRed"
+                    }
+                  },
+                  {
+                    "columnMatch": "AvgMemory",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "greenRed"
+                    }
+                  },
+                  {
+                    "columnMatch": "MaxMemory",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "greenRed"
+                    }
+                  },
+                  {
+                    "columnMatch": "SuccessRate",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "redGreen"
+                    }
+                  }
+                ]
+              }
+            },
+            "name": "KPI Summary"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "overview"
+      },
+      "name": "Overview Tab"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// CPU Usage Trend\nPerf\n| where TimeGenerated {TimeRange}\n| where ObjectName == \"Processor\" and CounterName == \"% Processor Time\" and InstanceName == \"_Total\"\n| summarize AvgCPU = avg(CounterValue), MaxCPU = max(CounterValue) by bin(TimeGenerated, 5m)\n| render timechart",
+              "size": 0,
+              "title": "🖥️ CPU Usage Trend",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "50",
+            "name": "CPU Usage Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Memory Usage Trend\nPerf\n| where TimeGenerated {TimeRange}\n| where ObjectName == \"Memory\" and CounterName == \"% Committed Bytes In Use\"\n| summarize AvgMemory = avg(CounterValue), MaxMemory = max(CounterValue) by bin(TimeGenerated, 5m)\n| render timechart",
+              "size": 0,
+              "title": "💾 Memory Usage Trend",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "50",
+            "name": "Memory Usage Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Disk Usage Analysis\nPerf\n| where TimeGenerated {TimeRange}\n| where ObjectName == \"LogicalDisk\" and CounterName in (\"% Free Space\", \"Disk Reads/sec\", \"Disk Writes/sec\")\n| where InstanceName != \"_Total\"\n| summarize AvgValue = avg(CounterValue) by CounterName, InstanceName, bin(TimeGenerated, 15m)\n| render timechart",
+              "size": 0,
+              "title": "💽 Disk Performance Analysis",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "name": "Disk Performance Chart"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "system"
+      },
+      "name": "System Performance Tab"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Long Running Queries\nlet Start_Time = {TimeRange:start};\nlet End_Time = {TimeRange:end};\nSynapseSqlPoolExecRequests \n| where TimeGenerated between (Start_Time .. End_Time)\n| where Label != \"health_checker\"\n| where Status contains \"Running\" or Status contains \"Completed\"\n| extend duration_sec = datetime_diff(\"second\", TimeGenerated, StartTime) \n| summarize \n    MaxDuration = max(duration_sec),\n    AvgDuration = avg(duration_sec),\n    QueryCount = count()\n    by bin(TimeGenerated, 10m)\n| render timechart",
+              "size": 0,
+              "title": "⏱️ SQL Query Duration Analysis",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "50",
+            "name": "Query Duration Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Top Long Running Queries\nlet Start_Time = {TimeRange:start};\nlet End_Time = {TimeRange:end};\nSynapseSqlPoolExecRequests \n| where TimeGenerated between (Start_Time .. End_Time)\n| where Label != \"health_checker\"\n| where Status contains \"Running\" or Status contains \"Completed\"\n| extend duration_sec = datetime_diff(\"second\", TimeGenerated, StartTime) \n| top 10 by duration_sec desc\n| project \n    RequestId,\n    Duration_Minutes = round(duration_sec / 60.0, 2),\n    Status,\n    ResourceClass,\n    Label,\n    StartTime\n| sort by Duration_Minutes desc",
+              "size": 0,
+              "title": "🔍 Top 10 Long Running Queries",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ],
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "Top Queries Table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Table Skew Analysis (Simulated)\nlet SkewData = datatable(schema_name:string, table_name:string, distribution_policy_name:string, table_row_count:long, Max_distribution_row_count:long, Min_distribution_row_count:long, avg_distribution_row_count:real, Table_Skew_Percent:real)\n[\n    \"dbo\", \"sales_fact\", \"HASH\", 10000000, 2500000, 500000, 1666666.67, 80.0,\n    \"dbo\", \"customer_dim\", \"HASH\", 5000000, 1200000, 800000, 833333.33, 33.33,\n    \"dbo\", \"product_dim\", \"HASH\", 2000000, 450000, 350000, 333333.33, 22.22,\n    \"staging\", \"temp_orders\", \"HASH\", 1500000, 400000, 200000, 250000.0, 50.0,\n    \"dbo\", \"transaction_log\", \"HASH\", 8000000, 1800000, 1200000, 1333333.33, 33.33\n];\nSkewData\n| where Table_Skew_Percent > 20\n| project \n    Table = strcat(schema_name, \".\", table_name),\n    \"Row Count\" = table_row_count,\n    \"Skew %\" = round(Table_Skew_Percent, 2),\n    \"Max Rows\" = Max_distribution_row_count,\n    \"Min Rows\" = Min_distribution_row_count,\n    \"Avg Rows\" = round(avg_distribution_row_count, 0)\n| sort by \"Skew %\" desc",
+              "size": 0,
+              "title": "⚖️ Table Skew Analysis (>20% Skew)",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ],
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  {
+                    "columnMatch": "Skew %",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "greenRed"
+                    }
+                  }
+                ]
+              }
+            },
+            "name": "Table Skew Analysis"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "database"
+      },
+      "name": "Database Performance Tab"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Spark CPU Consumption\nlet CpuData = SparkMetrics_CL\n| where TimeGenerated {TimeRange}\n| where name_s contains_cs \"executor.cpuTime\" \n| extend cputime = count_d / 1000000\n| summarize sum(cputime) by TimeGenerated, applicationName_s;\nCpuData\n| summarize cpu_time_ms = max(sum_cputime) by bin(TimeGenerated, 10m), applicationName_s\n| render timechart",
+              "size": 0,
+              "title": "⚡ Spark CPU Consumption by Application",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "50",
+            "name": "Spark CPU Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Top CPU Consuming Spark Applications\nlet CpuData = SparkMetrics_CL\n| where TimeGenerated {TimeRange}\n| where name_s contains_cs \"executor.cpuTime\" \n| extend cputime = count_d / 1000000\n| summarize sum(cputime) by TimeGenerated, applicationName_s;\nCpuData\n| summarize cpu_time_ms = max(sum_cputime) by applicationName_s\n| top 10 by cpu_time_ms desc\n| project \n    Application = applicationName_s,\n    \"CPU Time (ms)\" = round(cpu_time_ms, 2)\n| sort by \"CPU Time (ms)\" desc",
+              "size": 0,
+              "title": "🔥 Top 10 CPU Consuming Spark Applications",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ],
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "Top Spark Apps Table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Spark Memory Usage (Simulated)\nlet MemoryData = datatable(TimeGenerated:datetime, applicationName_s:string, memory_used_mb:real, memory_total_mb:real)\n[\n    datetime(2024-01-01 10:00:00), \"DataProcessingApp\", 2048, 4096,\n    datetime(2024-01-01 10:05:00), \"DataProcessingApp\", 2560, 4096,\n    datetime(2024-01-01 10:10:00), \"DataProcessingApp\", 3072, 4096,\n    datetime(2024-01-01 10:00:00), \"AnalyticsApp\", 1024, 2048,\n    datetime(2024-01-01 10:05:00), \"AnalyticsApp\", 1536, 2048,\n    datetime(2024-01-01 10:10:00), \"AnalyticsApp\", 1792, 2048\n];\nMemoryData\n| extend memory_usage_percent = (memory_used_mb / memory_total_mb) * 100\n| summarize avg(memory_usage_percent) by bin(TimeGenerated, 5m), applicationName_s\n| render timechart",
+              "size": 0,
+              "title": "💾 Spark Memory Usage by Application",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "name": "Spark Memory Chart"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "spark"
+      },
+      "name": "Spark Analytics Tab"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Health Check Status (Simulated)\nlet HealthChecks = datatable(TimeGenerated:datetime, CheckName:string, Status:string, Score:int, Recommendation:string)\n[\n    datetime(2024-01-01 10:00:00), \"CPU Health\", \"Good\", 85, \"CPU usage within normal range\",\n    datetime(2024-01-01 10:00:00), \"Memory Health\", \"Warning\", 75, \"Memory usage approaching threshold\",\n    datetime(2024-01-01 10:00:00), \"Disk Health\", \"Good\", 90, \"Disk performance optimal\",\n    datetime(2024-01-01 10:00:00), \"Database Health\", \"Critical\", 45, \"High table skew detected\",\n    datetime(2024-01-01 10:00:00), \"Application Health\", \"Good\", 88, \"Application performance stable\",\n    datetime(2024-01-01 10:05:00), \"CPU Health\", \"Good\", 82, \"CPU usage within normal range\",\n    datetime(2024-01-01 10:05:00), \"Memory Health\", \"Critical\", 65, \"Memory usage exceeds 85%\",\n    datetime(2024-01-01 10:05:00), \"Disk Health\", \"Good\", 92, \"Disk performance optimal\",\n    datetime(2024-01-01 10:05:00), \"Database Health\", \"Warning\", 70, \"Some queries running longer than expected\",\n    datetime(2024-01-01 10:05:00), \"Application Health\", \"Good\", 85, \"Application performance stable\"\n];\nHealthChecks\n| summarize LatestScore = arg_max(TimeGenerated, Score, Status, Recommendation) by CheckName\n| project \n    \"Health Check\" = CheckName,\n    Status = LatestScore_Status,\n    Score = LatestScore_Score,\n    Recommendation = LatestScore_Recommendation\n| sort by Score asc",
+              "size": 0,
+              "title": "🏥 System Health Check Summary",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ],
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  {
+                    "columnMatch": "Status",
+                    "formatter": 18,
+                    "formatOptions": {
+                      "thresholdsOptions": "colors",
+                      "thresholdsGrid": [
+                        {
+                          "operator": "==",
+                          "thresholdValue": "Good",
+                          "representation": "green",
+                          "text": "✅ Good"
+                        },
+                        {
+                          "operator": "==",
+                          "thresholdValue": "Warning",
+                          "representation": "yellow",
+                          "text": "⚠️ Warning"
+                        },
+                        {
+                          "operator": "==",
+                          "thresholdValue": "Critical",
+                          "representation": "red",
+                          "text": "🚨 Critical"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "columnMatch": "Score",
+                    "formatter": 8,
+                    "formatOptions": {
+                      "palette": "redGreen"
+                    }
+                  }
+                ]
+              }
+            },
+            "customWidth": "60",
+            "name": "Health Check Table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Health Score Trend (Simulated)\nlet HealthTrend = datatable(TimeGenerated:datetime, CheckName:string, Score:int)\n[\n    datetime(2024-01-01 09:00:00), \"Overall Health\", 85,\n    datetime(2024-01-01 09:15:00), \"Overall Health\", 82,\n    datetime(2024-01-01 09:30:00), \"Overall Health\", 78,\n    datetime(2024-01-01 09:45:00), \"Overall Health\", 75,\n    datetime(2024-01-01 10:00:00), \"Overall Health\", 72,\n    datetime(2024-01-01 10:15:00), \"Overall Health\", 68,\n    datetime(2024-01-01 10:30:00), \"Overall Health\", 70,\n    datetime(2024-01-01 10:45:00), \"Overall Health\", 73,\n    datetime(2024-01-01 11:00:00), \"Overall Health\", 76\n];\nHealthTrend\n| render timechart",
+              "size": 0,
+              "title": "📈 Overall Health Score Trend",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ]
+            },
+            "customWidth": "40",
+            "name": "Health Trend Chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "// Critical Issues and Recommendations\nlet CriticalIssues = datatable(Issue:string, Severity:string, Impact:string, Recommendation:string, EstimatedResolution:string)\n[\n    \"High Table Skew in sales_fact\", \"Critical\", \"Query performance degradation\", \"Rebuild table with better distribution key\", \"2 hours\",\n    \"Memory usage exceeds 85%\", \"Critical\", \"System instability risk\", \"Scale up resources or optimize memory usage\", \"30 minutes\",\n    \"Long running queries detected\", \"Warning\", \"User experience impact\", \"Review and optimize query performance\", \"1 hour\",\n    \"Disk space usage at 78%\", \"Warning\", \"Storage capacity risk\", \"Clean up old files or expand storage\", \"45 minutes\"\n];\nCriticalIssues\n| project \n    \"🚨 Issue\" = Issue,\n    Severity,\n    \"💥 Impact\" = Impact,\n    \"🔧 Recommendation\" = Recommendation,\n    \"⏱️ Est. Resolution\" = EstimatedResolution\n| sort by case(Severity == \"Critical\", 1, Severity == \"Warning\", 2, 3)",
+              "size": 0,
+              "title": "🚨 Critical Issues and Recommendations",
+              "timeContext": {
+                "durationMs": 0
+              },
+              "timeContextFromParameter": "TimeRange",
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "crossComponentResources": [
+                "{workspace}"
+              ],
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  {
+                    "columnMatch": "Severity",
+                    "formatter": 18,
+                    "formatOptions": {
+                      "thresholdsOptions": "colors",
+                      "thresholdsGrid": [
+                        {
+                          "operator": "==",
+                          "thresholdValue": "Critical",
+                          "representation": "red",
+                          "text": "🚨 Critical"
+                        },
+                        {
+                          "operator": "==",
+                          "thresholdValue": "Warning",
+                          "representation": "yellow",
+                          "text": "⚠️ Warning"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "name": "Critical Issues Table"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "health"
+      },
+      "name": "Health Checks Tab"
+    }
+  ],
+  "fallbackResourceIds": [
+    "Azure Monitor"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
